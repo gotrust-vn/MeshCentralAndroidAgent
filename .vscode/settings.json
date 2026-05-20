@@ -1,0 +1,9 @@
+{
+    "android.sdk.root": "C:\\Users\\Admin\\AppData\\Local\\Android\\Sdk",
+    "java.home": "C:\\Program Files\\Eclipse Adoptium\\jdk-17.0.17.10-hotspot",
+    "files.exclude": {
+        "**/.git": true,
+        "**/build": false
+    },
+    "kotlin.languageServer.enabled": true
+}

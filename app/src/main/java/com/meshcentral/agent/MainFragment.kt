@@ -3,9 +3,13 @@ package com.meshcentral.agent
 import android.Manifest
 import android.R.attr.*
 import android.app.AlertDialog
+import android.content.ComponentName
+import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -64,6 +68,18 @@ class MainFragment : Fragment(), MultiplePermissionsListener {
                         .check()
                 }
             }
+        }
+
+        view.findViewById<Button>(R.id.screenShareButton).setOnClickListener {
+            if (g_ScreenCaptureService != null) {
+                (activity as MainActivity).stopProjection()
+            } else {
+                (activity as MainActivity).startProjection()
+            }
+        }
+
+        view.findViewById<Button>(R.id.accessibilityButton).setOnClickListener {
+            openAccessibilityServiceSettings()
         }
 
         // Check if the app was called using a URL link
@@ -270,6 +286,30 @@ class MainFragment : Fragment(), MultiplePermissionsListener {
             getActivity()?.setTitle(R.string.app_name);
         }
 
+        // Screen share button — visible only when agent is connected
+        val shareBtn = view?.findViewById<Button>(R.id.screenShareButton)
+        if (shareBtn != null) {
+            val agentConnected = meshAgent != null && meshAgent!!.state == 3
+            val sharing = g_ScreenCaptureService != null
+            shareBtn.visibility = if (agentConnected) View.VISIBLE else View.GONE
+            if (sharing) {
+                shareBtn.text = getStringEx(R.string.screen_sharing_active)
+                shareBtn.alpha = 0.7f
+            } else {
+                shareBtn.text = getStringEx(R.string.sharescreen)
+                shareBtn.alpha = 1.0f
+            }
+        }
+
+        // Accessibility / remote-control button
+        val accBtn = view?.findViewById<Button>(R.id.accessibilityButton)
+        if (accBtn != null) {
+            val enabled = isAccessibilityServiceEnabled()
+            accBtn.text = if (enabled) getStringEx(R.string.remote_control_active) else getStringEx(R.string.enable_remote_control)
+            accBtn.alpha = if (enabled) 0.5f else 1.0f
+            accBtn.isEnabled = !enabled
+        }
+
         if (showServerLogo == 0) {
             // Display default MeshCentral image
             var imageView : ImageView? = null
@@ -308,6 +348,37 @@ class MainFragment : Fragment(), MultiplePermissionsListener {
             }
         }
         */
+    }
+
+    private fun openAccessibilityServiceSettings() {
+        val serviceId = ComponentName(requireContext(), MeshAccessibilityService::class.java).flattenToString()
+        if (Build.VERSION.SDK_INT >= 34) {
+            try {
+                startActivity(Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS").apply {
+                    putExtra("accessibility_service", serviceId)
+                })
+                return
+            } catch (_: Exception) {}
+        }
+        try {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                putExtra(":settings:show_fragment_args", Bundle().apply {
+                    putString(":settings:fragment_args_key", serviceId)
+                })
+                putExtra(":settings:fragment_args_key", serviceId)
+            })
+        } catch (_: Exception) {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
+    }
+
+    private fun isAccessibilityServiceEnabled(): Boolean {
+        val cm = ComponentName(requireContext(), MeshAccessibilityService::class.java)
+        val enabled = Settings.Secure.getString(
+            requireContext().contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+        return enabled.split(':').any { ComponentName.unflattenFromString(it) == cm }
     }
 
     fun getServerHost(serverLink: String?) : String? {

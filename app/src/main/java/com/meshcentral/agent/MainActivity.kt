@@ -86,6 +86,7 @@ var g_retryTimer: CountDownTimer? = null
 
 // Remote desktop values
 var g_ScreenCaptureService : ScreenCaptureService? = null
+var g_pendingProjectionRequest : Boolean = false
 var g_desktop_imageType : Int = 1
 var g_desktop_compressionLevel : Int = 40
 var g_desktop_scalingLevel : Int = 1024
@@ -299,6 +300,7 @@ class MainActivity : AppCompatActivity() {
         super.onActivityResult(requestCode, resultCode, data)
 
         if (requestCode == MainActivity.Companion.REQUEST_CODE) {
+            g_pendingProjectionRequest = false
             if (resultCode == RESULT_OK) {
                 startService(com.meshcentral.agent.ScreenCaptureService.getStartIntent(this, resultCode, data))
                 if (meshAgent?.tunnels?.getOrNull(0) != null) {
@@ -386,6 +388,8 @@ class MainActivity : AppCompatActivity() {
             }
             if (((meshAgent != null) && (meshAgent?.state == 2)) || (g_userDisconnect) || (!g_autoConnect)) stopRetryTimer()
             else if ((meshAgent == null) && (!g_userDisconnect) && (g_autoConnect) && (g_retryTimer == null)) startRetryTimer()
+            // Auto-start screen capture as soon as agent connects when autoConsent is on
+            if (g_autoConsent && meshAgent?.state == 3) startProjection()
             mainFragment?.refreshInfo()
         }
     }
@@ -576,9 +580,10 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         } else if (meshAgent != null) {
-            // Stop the agent
-            if (userInitiated) { g_userDisconnect = true }
-            stopProjection()
+            if (userInitiated) {
+                g_userDisconnect = true
+                stopProjection()
+            }
             meshAgent?.Stop()
             meshAgent = null
         }
@@ -667,6 +672,8 @@ class MainActivity : AppCompatActivity() {
     // Start screen sharing
     fun startProjection() {
         if ((g_ScreenCaptureService != null) || (meshAgent == null) || (meshAgent!!.state != 3)) return
+        if (g_pendingProjectionRequest) return
+        g_pendingProjectionRequest = true
         val mProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         startActivityForResult(mProjectionManager.createScreenCaptureIntent(), MainActivity.Companion.REQUEST_CODE)
     }
@@ -695,9 +702,9 @@ class MainActivity : AppCompatActivity() {
             }
             if (g_autoConsent) {
                 startProjection()
-            } else if (!g_autoConsent && g_ScreenCaptureService != null) {
-                stopProjection()
             }
+            // Do NOT stop service when autoConsent is off — service lifecycle is
+            // controlled by user disconnect only, not by settings reload
         }
     }
 

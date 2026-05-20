@@ -32,6 +32,7 @@ import java.io.*
 
 class ScreenCaptureService : Service() {
     private var mMediaProjection: MediaProjection? = null
+    private var mProjectionCallback: MediaProjectionStopCallback? = null
     private var mImageReader: ImageReader? = null
     private var mHandler: Handler? = null
     private var mDisplay: Display? = null
@@ -41,6 +42,8 @@ class ScreenCaptureService : Service() {
     private var mOrientationChangeCallback: ScreenCaptureService.OrientationChangeCallback? = null
     var mWidth = 0
     var mHeight = 0
+    private var captureRunning: Boolean = false
+    val isCaptureActive: Boolean get() = captureRunning
 
     // Tile data
     private var tilesWide : Int = 0
@@ -56,10 +59,7 @@ class ScreenCaptureService : Service() {
     private inner class ImageAvailableListener : OnImageAvailableListener {
 
         override fun onImageAvailable(reader: ImageReader) {
-            if ((meshAgent == null) && (g_mainActivity != null)) {
-                g_mainActivity!!.stopProjection()
-                return
-            }
+            if (meshAgent == null) return // Agent disconnected — keep service alive, skip frame
 
             var bitmap: Bitmap? = null
             var image: android.media.Image? = null
@@ -326,14 +326,35 @@ class ScreenCaptureService : Service() {
 
     private inner class MediaProjectionStopCallback : MediaProjection.Callback() {
         override fun onStop() {
-            //Log.e(ScreenCaptureService.Companion.TAG, "stopping projection.")
-            if (mHandler != null) {
-                mHandler!!.post {
-                    if (mVirtualDisplay != null) mVirtualDisplay!!.release()
-                    if (mImageReader != null) mImageReader!!.setOnImageAvailableListener(null, null)
-                    if (mOrientationChangeCallback != null) mOrientationChangeCallback!!.disable()
-                    mMediaProjection!!.unregisterCallback(this@MediaProjectionStopCallback)
-                }
+            mHandler?.post {
+                if (mVirtualDisplay != null) { mVirtualDisplay!!.release(); mVirtualDisplay = null }
+                if (mImageReader != null) { mImageReader!!.setOnImageAvailableListener(null, null); mImageReader = null }
+                mOrientationChangeCallback?.disable()
+                if (mProjectionCallback != null) { mMediaProjection?.unregisterCallback(mProjectionCallback!!); mProjectionCallback = null }
+                mMediaProjection = null
+                g_ScreenCaptureService = null
+                stopSelf()
+            }
+        }
+    }
+
+    // Pause: detach surface from VirtualDisplay — stops frame delivery without destroying anything
+    // Android 14+ forbids calling createVirtualDisplay() twice on the same MediaProjection instance
+    fun pauseCapture() {
+        mHandler?.post {
+            mVirtualDisplay?.setSurface(null)
+            captureRunning = false
+            tilesFullWide = 0
+            tilesFullHigh = 0
+        }
+    }
+
+    // Resume: reattach surface — frames start flowing again, no permission dialog needed
+    fun resumeCapture() {
+        mHandler?.post {
+            if (mVirtualDisplay != null && mImageReader != null) {
+                mVirtualDisplay!!.setSurface(mImageReader!!.surface)
+                captureRunning = true
             }
         }
     }
@@ -393,6 +414,10 @@ class ScreenCaptureService : Service() {
                     mDisplay = windowManager.defaultDisplay
                 }
 
+                // Register MediaProjection stop callback once — survives pause/resume cycles
+                mProjectionCallback = MediaProjectionStopCallback()
+                mMediaProjection!!.registerCallback(mProjectionCallback!!, mHandler)
+
                 // Create virtual display depending on device width / height
                 createVirtualDisplay()
 
@@ -403,6 +428,7 @@ class ScreenCaptureService : Service() {
                 }
 
                 g_ScreenCaptureService = this
+                captureRunning = true
                 updateTunnelDisplaySize()
                 sendAgentConsole("Started display sharing")
             }
@@ -429,17 +455,29 @@ class ScreenCaptureService : Service() {
 
     @SuppressLint("WrongConstant")
     private fun createVirtualDisplay() {
-        // Get width and height
-        mWidth = Resources.getSystem().displayMetrics.widthPixels
-        mHeight = Resources.getSystem().displayMetrics.heightPixels
+        // Use the true physical display bounds so the capture includes the status bar and nav bar.
+        // Resources.getSystem().displayMetrics excludes the navigation bar on many devices, causing
+        // a coordinate mismatch: dispatchGesture uses full-screen coords but the captured image starts
+        // below the status bar, shifting every click upward by ~statusBarHeight pixels.
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            val bounds = wm.currentWindowMetrics.bounds
+            mWidth = bounds.width()
+            mHeight = bounds.height()
+        } else {
+            val realMetrics = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION")
+            wm.defaultDisplay.getRealMetrics(realMetrics)
+            mWidth = realMetrics.widthPixels
+            mHeight = realMetrics.heightPixels
+        }
+        mDensity = Resources.getSystem().displayMetrics.densityDpi
 
         sendAgentConsole("Screen: $mWidth x $mHeight")
         updateTunnelDisplaySize()
 
         // Start capture reader
         mImageReader = ImageReader.newInstance(mWidth, mHeight, PixelFormat.RGBA_8888, 2)
-        // Register media projection stop callback
-        mMediaProjection!!.registerCallback(this.MediaProjectionStopCallback(), mHandler)
         mVirtualDisplay = mMediaProjection!!.createVirtualDisplay(ScreenCaptureService.Companion.SCREENCAP_NAME, mWidth, mHeight,
                 mDensity, ScreenCaptureService.Companion.virtualDisplayFlags, mImageReader!!.surface, null, mHandler)
 
@@ -498,13 +536,7 @@ class ScreenCaptureService : Service() {
             if ((t.state == 2) && (t.usage == 2)) { desktopTunnelCloud++ }
         }
         if (desktopTunnelCloud == 0) {
-            // If there are no more desktop tunnels, stop projection
-            if (!g_autoConsent) {
-                g_mainActivity!!.stopProjection()
-            } else { // reset the tilesFullWide and tilesFullHigh so on next connect it will send the whole image rather than changed tiles
-                tilesFullWide = 0
-                tilesFullHigh = 0
-            }
+            pauseCapture() // Stop capturing when no one is watching, but keep MediaProjection alive
         }
     }
 
