@@ -27,6 +27,10 @@ class MeshAccessibilityService : AccessibilityService() {
     private var rightStartX = 0f
     private var rightStartY = 0f
 
+    // MediaProjection dialog auto-accept state
+    // false = need to change spinner; true = spinner clicked, waiting to pick "entire screen"
+    private var awaitingFullScreenSelection = false
+
     // Text injection tracking — we maintain our own copy because node.text is often null or
     // stale after ACTION_SET_TEXT, especially in custom search bars and WebView-based fields.
     private var typingNodeId: Int = -1
@@ -46,6 +50,9 @@ class MeshAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         when (event?.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                if (g_autoConsent) tryAutoAcceptMediaProjection()
+            }
             AccessibilityEvent.TYPE_VIEW_FOCUSED -> {
                 // Reset text tracker when focus moves to a different node
                 val src = event.source ?: return
@@ -441,6 +448,98 @@ class MeshAccessibilityService : AccessibilityService() {
         val path = Path().apply { moveTo(x, y); lineTo(x, y2) }
         val stroke = GestureDescription.StrokeDescription(path, 0, 300)
         dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), null, null)
+    }
+
+    // Auto-accept the Android MediaProjection permission dialog when autoConsent is on.
+    // Android 14+ shows a 2-step dialog:
+    //   Step 1 – spinner defaults to "Chia sẻ một ứng dụng" → click it to open dropdown
+    //   Step 2 – dropdown open → click "Chia sẻ toàn màn hình"
+    //   Step 3 – confirm with "Tiếp theo" / "Start now" etc.
+    private fun tryAutoAcceptMediaProjection() {
+        val roots = getSystemUIRoots()
+        if (roots.isEmpty()) return
+
+        for (root in roots) {
+            // Step 2: dropdown is open — pick "entire screen"
+            if (awaitingFullScreenSelection) {
+                val fullScreenTexts = listOf(
+                    "toàn bộ màn hình",  // Samsung VI: "Chia sẻ toàn bộ màn hình"
+                    "toàn màn hình",     // alt VI: "Chia sẻ toàn màn hình"
+                    "Entire screen",     // AOSP EN
+                    "Whole screen",      // Samsung EN
+                    "Full screen"
+                )
+                for (text in fullScreenTexts) {
+                    if (clickNodeByText(root, text)) {
+                        awaitingFullScreenSelection = false
+                        return
+                    }
+                }
+                return // dropdown not ready yet, wait for next event
+            }
+
+            // Step 1: "Share one app" spinner visible → click it to open dropdown
+            val oneAppTexts = listOf("một ứng dụng", "Share one app", "An app", "one app")
+            var spinnerClicked = false
+            for (text in oneAppTexts) {
+                if (clickNodeByText(root, text)) {
+                    awaitingFullScreenSelection = true
+                    spinnerClicked = true
+                    break
+                }
+            }
+            if (spinnerClicked) return
+
+            // Step 3: confirm button — text varies by spinner selection and Android version
+            val confirmTexts = listOf(
+                "Chia sẻ màn hình",  // Samsung VI after selecting "entire screen"
+                "Chia sẻ",           // Samsung VI short variant
+                "Share screen",      // Samsung EN after selecting "entire screen"
+                "Share",             // AOSP EN short
+                "Tiếp theo",         // Samsung VI when "one app" selected
+                "Next",              // EN when "one app" selected
+                "Start now", "Bắt đầu ngay", "Bắt đầu", "Allow", "Start"
+            )
+            for (text in confirmTexts) {
+                if (clickNodeByText(root, text)) return
+            }
+        }
+    }
+
+    private fun clickNodeByText(root: AccessibilityNodeInfo, text: String): Boolean {
+        val nodes = try { root.findAccessibilityNodeInfosByText(text) } catch (e: Exception) { return false }
+        for (node in nodes) {
+            val target = if (node.isClickable && node.isEnabled) node
+                         else node.parent?.takeIf { it.isClickable && it.isEnabled }
+            if (target != null) {
+                println("autoAccept: clicking '$text'")
+                target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun getSystemUIRoots(): List<AccessibilityNodeInfo> {
+        val roots = mutableListOf<AccessibilityNodeInfo>()
+        val allWins = try { windows } catch (e: Exception) { null }
+        if (allWins != null) {
+            for (win in allWins) {
+                val root = try { win.root } catch (e: Exception) { null } ?: continue
+                val pkg = root.packageName?.toString() ?: continue
+                if (pkg.contains("systemui", ignoreCase = true) || pkg == "android") {
+                    roots.add(root)
+                }
+            }
+        }
+        if (roots.isEmpty()) {
+            val root = rootInActiveWindow ?: return roots
+            val pkg = root.packageName?.toString() ?: return roots
+            if (pkg.contains("systemui", ignoreCase = true) || pkg == "android") {
+                roots.add(root)
+            }
+        }
+        return roots
     }
 
     // Convert scaled coordinates back to physical screen pixels

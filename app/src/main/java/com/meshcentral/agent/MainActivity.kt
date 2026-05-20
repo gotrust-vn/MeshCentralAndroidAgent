@@ -582,7 +582,7 @@ class MainActivity : AppCompatActivity() {
         } else if (meshAgent != null) {
             if (userInitiated) {
                 g_userDisconnect = true
-                stopProjection()
+                if (!g_autoConsent) stopProjection()
             }
             meshAgent?.Stop()
             meshAgent = null
