@@ -14,14 +14,25 @@ var g_AccessibilityService: MeshAccessibilityService? = null
 
 class MeshAccessibilityService : AccessibilityService() {
 
-    // Drag/swipe state
-    private var isDragging = false
-    private var hasMoved = false
-    private var touchStartX = 0f
-    private var touchStartY = 0f
+    // Drag/swipe state — @Volatile so main-thread longPressRunnable sees writes from WebSocket thread
+    @Volatile private var isDragging = false
+    @Volatile private var hasMoved = false
+    @Volatile private var longPressDispatched = false
+    @Volatile private var touchStartX = 0f
+    @Volatile private var touchStartY = 0f
     private val dragPath = Path()
     private var leftDownTime = 0L
-    private val HOLD_LONG_PRESS_MS = 600L
+    private val HOLD_LONG_PRESS_MS = 500L
+
+    // Fires after HOLD_LONG_PRESS_MS while finger is still down and hasn't moved
+    private val longPressHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val longPressRunnable = Runnable {
+        println("longPressTimer: isDragging=$isDragging hasMoved=$hasMoved at ($touchStartX,$touchStartY)")
+        if (isDragging && !hasMoved) {
+            longPressDispatched = true
+            dispatchLongPress(touchStartX, touchStartY)
+        }
+    }
 
     // Right-click start position
     private var rightStartX = 0f
@@ -93,7 +104,12 @@ class MeshAccessibilityService : AccessibilityService() {
             0x00 -> { // Move — accumulate path, dispatch nothing until mouse-up
                 if (isDragging) {
                     dragPath.lineTo(sx, sy)
-                    hasMoved = true
+                    // Only count as real movement if displaced > 20px from start.
+                    if (!hasMoved && (abs(sx - touchStartX) > 20f || abs(sy - touchStartY) > 20f)) {
+                        hasMoved = true
+                        longPressHandler.removeCallbacks(longPressRunnable)
+                        println("longPressCancel: moved ${abs(sx-touchStartX)}x,${abs(sy-touchStartY)}y — timer cancelled")
+                    }
                 }
             }
             0x02 -> { // Left button DOWN — record start position
@@ -102,22 +118,23 @@ class MeshAccessibilityService : AccessibilityService() {
                 dragPath.moveTo(sx, sy)
                 isDragging = true
                 hasMoved = false
+                longPressDispatched = false
                 leftDownTime = System.currentTimeMillis()
+                println("mouseDown: ($sx,$sy) — starting ${HOLD_LONG_PRESS_MS}ms longPress timer")
+                longPressHandler.postDelayed(longPressRunnable, HOLD_LONG_PRESS_MS)
             }
             0x04 -> { // Left button UP — dispatch the full gesture at once
+                longPressHandler.removeCallbacks(longPressRunnable)
                 if (isDragging) {
                     isDragging = false
-                    val heldMs = System.currentTimeMillis() - leftDownTime
-                    if (!hasMoved) {
-                        // No movement: tap or long-press
-                        if (heldMs >= HOLD_LONG_PRESS_MS) {
-                            println("leftHold: ${heldMs}ms → long press")
-                            dispatchLongPress(touchStartX, touchStartY)
-                        } else {
-                            dispatchTap(touchStartX, touchStartY)
-                        }
+                    if (longPressDispatched) {
+                        // Long press already fired via timer, nothing more to do
+                        longPressDispatched = false
+                    } else if (!hasMoved) {
+                        dispatchTap(touchStartX, touchStartY)
                     } else {
                         dragPath.lineTo(sx, sy)
+                        val heldMs = System.currentTimeMillis() - leftDownTime
                         val dy = touchStartY - sy  // positive = finger moved up
                         val dx = sx - touchStartX  // positive = finger moved right
 
@@ -211,18 +228,43 @@ class MeshAccessibilityService : AccessibilityService() {
         dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), null, null)
     }
 
-    // Keyboard event — called from MeshTunnel.
-    // Handles both Windows VK codes (cmd=85) and X11 keysym values (cmd=1, 0xFF__).
+    // Unicode character input — called from MeshTunnel cmd=85.
+    fun injectUnicodeChar(char: Int, isDown: Boolean) {
+        // Log ALL events (including key-up) so we can diagnose what the client sends
+        println("injectUnicode: U+${char.toString(16)} down=$isDown")
+        if (!isDown) return
+        // Control chars (< 0x20), DEL (0x7F), X11 keysym range (>= 0xFF00) → special-key handler
+        if (char < 0x20 || char == 0x7F || char >= 0xFF00) {
+            injectKeyEvent(char, isDown)
+            return
+        }
+        val node = inputFocusNode() ?: run {
+            println("injectUnicode: no focused node")
+            return
+        }
+        syncTypingNode(node)
+        typingText += String(Character.toChars(char))
+        setNodeText(node, typingText)
+    }
+
+    // Special-key event — called from MeshTunnel cmd=1 (Windows VK codes and X11 keysym).
     fun injectKeyEvent(keyChar: Int, isDown: Boolean) {
         println("injectKey: char=0x${keyChar.toString(16)} down=$isDown")
         if (!isDown) return
         when (keyChar) {
-            0x08, 0x7F, 0xFF08 -> { // Backspace / XK_BackSpace
-                val node = inputFocusNode() ?: return
-                syncTypingNode(node)
-                if (typingText.isNotEmpty()) {
-                    typingText = typingText.dropLast(1)
-                    setNodeText(node, typingText)
+            0x08, 0x7F, 0xFF08 -> { // Backspace / Delete / XK_BackSpace
+                val node = inputFocusNode() ?: run {
+                    println("injectKey: backspace but no focused node")
+                    return
+                }
+                // Always read current text from node (don't rely on potentially stale buffer)
+                val currentText = node.text?.toString() ?: typingText
+                println("injectKey: backspace currentText='$currentText'")
+                if (currentText.isNotEmpty()) {
+                    val newText = currentText.dropLast(1)
+                    typingText = newText
+                    typingNodeId = System.identityHashCode(node)
+                    setNodeText(node, newText)
                 }
             }
             0x0D, 0x0A, 0xFF0D -> { // Enter / XK_Return
@@ -435,8 +477,58 @@ class MeshAccessibilityService : AccessibilityService() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return
         println("dispatchLongPress: ($x,$y)")
         val path = Path().apply { moveTo(x, y) }
-        val stroke = GestureDescription.StrokeDescription(path, 0, 800)
-        dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), null, null)
+        // 1500ms: well beyond Flutter/Android 500ms LPR threshold, gives action time to complete
+        val stroke = GestureDescription.StrokeDescription(path, 0, 1500)
+        val cb = object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                println("dispatchLongPress: gesture completed — trying ACTION_LONG_CLICK fallback")
+                performNodeLongClick(x.toInt(), y.toInt())
+            }
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                println("dispatchLongPress: gesture cancelled → ACTION_LONG_CLICK at ($x,$y)")
+                performNodeLongClick(x.toInt(), y.toInt())
+            }
+        }
+        val dispatched = dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), cb, null)
+        println("dispatchLongPress: gesture dispatched=$dispatched")
+        if (!dispatched) {
+            println("dispatchLongPress: not dispatched → ACTION_LONG_CLICK at ($x,$y)")
+            performNodeLongClick(x.toInt(), y.toInt())
+        }
+    }
+
+    private fun performNodeLongClick(x: Int, y: Int) {
+        val allWindows = try { windows } catch (e: Exception) { null }
+        if (allWindows != null) {
+            for (window in allWindows) {
+                val root = try { window.root } catch (e: Exception) { null } ?: continue
+                val pkg = root.packageName?.toString() ?: ""
+                val node = findDeepestClickableNode(root, x, y, requireClickable = false)
+                if (node != null) {
+                    val actions = node.actionList?.map { it.id } ?: emptyList()
+                    println("performNodeLongClick: pkg=$pkg cls=${node.className} clickable=${node.isClickable} actions=$actions at ($x,$y)")
+                    if (node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)) {
+                        println("performNodeLongClick: ok at ($x,$y)")
+                        return
+                    }
+                    // Try parent
+                    var p = node.parent
+                    while (p != null) {
+                        if (p.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)) {
+                            println("performNodeLongClick: parent ok cls=${p.className}")
+                            return
+                        }
+                        p = p.parent
+                    }
+                } else {
+                    println("performNodeLongClick: no node at ($x,$y) in pkg=$pkg")
+                }
+            }
+        }
+        val root = rootInActiveWindow ?: return
+        val node = findDeepestClickableNode(root, x, y, requireClickable = false) ?: return
+        println("performNodeLongClick: rootWin cls=${node.className} clickable=${node.isClickable}")
+        node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
     }
 
     private fun dispatchScroll(x: Float, y: Float, scrollDown: Boolean) {

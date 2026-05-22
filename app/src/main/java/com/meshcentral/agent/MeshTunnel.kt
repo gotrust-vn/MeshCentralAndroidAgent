@@ -311,10 +311,19 @@ class MeshTunnel(parent: MeshAgent, url: String, serverData: JSONObject) : WebSo
 
     private fun processBinaryDesktopCmd(cmd : Int, cmdsize: Int, msg: ByteString) {
         when (cmd) {
-            1 -> { // Legacy key input (keysym)
-                if (cmdsize < 7) return
-                val keyCode = ((msg[4].toInt() and 0xFF) shl 8) or (msg[5].toInt() and 0xFF)
-                val isDown = (msg[6].toInt() and 0xFF) != 0
+            1 -> { // Key input — two formats:
+                //   size=6: [isDown(1)][keyCode(1)]   ← MeshCentral web client
+                //   size=7: [keyCode(2)][isDown(1)]   ← legacy/X11 keysym
+                if (cmdsize < 6) return
+                val isDown: Boolean
+                val keyCode: Int
+                if (cmdsize >= 7) {
+                    keyCode = ((msg[4].toInt() and 0xFF) shl 8) or (msg[5].toInt() and 0xFF)
+                    isDown = (msg[6].toInt() and 0xFF) != 0
+                } else {
+                    isDown = (msg[4].toInt() and 0xFF) != 0
+                    keyCode = msg[5].toInt() and 0xFF
+                }
                 println("Key1: code=0x${keyCode.toString(16)} down=$isDown hex=${msg.toByteArray().toHex()} svc=${g_AccessibilityService != null}")
                 g_AccessibilityService?.injectKeyEvent(keyCode, isDown)
             }
@@ -352,12 +361,12 @@ class MeshTunnel(parent: MeshAgent, url: String, serverData: JSONObject) : WebSo
             8 -> { // Pause
                 // Nop
             }
-            85 -> { // Unicode key input: [char(2), down(1)]
+            85 -> { // Unicode key input: [down(1), charHi(1), charLo(1)]
                 if (cmdsize < 7) return
-                val keyChar = ((msg[4].toInt() and 0xFF) shl 8) or (msg[5].toInt() and 0xFF)
-                val isDown = (msg[6].toInt() and 0xFF) != 0
+                val isDown = (msg[4].toInt() and 0xFF) != 0
+                val keyChar = ((msg[5].toInt() and 0xFF) shl 8) or (msg[6].toInt() and 0xFF)
                 println("Key85: char=0x${keyChar.toString(16)} down=$isDown hex=${msg.toByteArray().toHex()} svc=${g_AccessibilityService != null}")
-                g_AccessibilityService?.injectKeyEvent(keyChar, isDown)
+                g_AccessibilityService?.injectUnicodeChar(keyChar, isDown)
             }
             14 -> { // MNG_KVM_INIT_TOUCH — server asking if we support touch input
                 println("INIT_TOUCH: responding with touch support enabled")
