@@ -8,18 +8,15 @@ import android.net.Uri
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
-import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.NetworkInterface
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 
 class MeshFirebaseMessagingService : FirebaseMessagingService() {
-    private val msgId = AtomicInteger()
 
     override fun onNewToken(token: String) {
         super.onNewToken(token)
@@ -85,15 +82,9 @@ class MeshFirebaseMessagingService : FirebaseMessagingService() {
     }
 
     fun sendMessage(to:String, cmd:String, session:String, relayId: String?) {
-        println("sendMessage: $to, $cmd, $session")
-        val fm = FirebaseMessaging.getInstance()
-
-        var m = RemoteMessage.Builder("${to}@gcm.googleapis.com")
-        m.setMessageId(msgId.incrementAndGet().toString())
-        m.addData("con", cmd)
-        m.addData("s", session)
-        if (relayId != null) { m.addData("r", relayId) }
-        fm.send(m.build())
+        // FCM upstream messaging (fm.send) was removed from the Firebase SDK.
+        // Console responses are sent over the WebSocket control channel instead.
+        println("sendMessage: upstream FCM not supported, dropping: $to, $cmd, $session")
     }
 
     private fun parseArgString(s: String) : List<String> {

@@ -109,11 +109,42 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         g_mainActivity = this
         val sharedPreferences = getSharedPreferences("meshagent", Context.MODE_PRIVATE)
+
+        // Global crash handler — saves stack trace and shows it on next launch
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, ex ->
+            try {
+                val trace = android.util.Log.getStackTraceString(ex)
+                sharedPreferences.edit().putString("last_crash", "[${thread.name}] ${ex}\n$trace").apply()
+            } catch (_: Exception) {}
+            defaultHandler?.uncaughtException(thread, ex)
+        }
+
+        // Show last crash log if present
+        val lastCrash = sharedPreferences.getString("last_crash", null)
+        if (lastCrash != null) {
+            sharedPreferences.edit().remove("last_crash").apply()
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                try {
+                    val dlg = android.app.AlertDialog.Builder(this)
+                    dlg.setTitle("Last crash log")
+                    val tv = android.widget.TextView(this).apply {
+                        text = lastCrash
+                        setPadding(32, 32, 32, 32)
+                        setTextIsSelectable(true)
+                        textSize = 10f
+                    }
+                    val sv = android.widget.ScrollView(this).apply { addView(tv) }
+                    dlg.setView(sv)
+                    dlg.setPositiveButton("OK") { d, _ -> d.dismiss() }
+                    dlg.show()
+                } catch (_: Exception) {}
+            }, 800)
+        }
+
         if (hardCodedServerLink != null) {
-            // Use the hard coded server link
             serverLink = hardCodedServerLink
         } else {
-            // Use the configurable server link
             serverLink = sharedPreferences?.getString("qrmsh", null)
         }
 
@@ -131,10 +162,20 @@ class MainActivity : AppCompatActivity() {
         intentFilter.addAction(Intent.ACTION_POWER_CONNECTED)
         intentFilter.addAction(Intent.ACTION_POWER_DISCONNECTED)
         intentFilter.addAction(Intent.ACTION_BATTERY_CHANGED)
-        registerReceiver(batteryInfoReceiver, intentFilter)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(batteryInfoReceiver, intentFilter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(batteryInfoReceiver, intentFilter)
+        }
 
-        // Check if this device has a camera
-        cameraPresent = applicationContext.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA)
+        // FEATURE_CAMERA_ANY checks hardware declaration, no camera permission needed.
+        // Camera2 cameraIdList returns empty on Android 14+ when permission not yet granted,
+        // which would incorrectly set cameraPresent=false on phones with a real camera.
+        cameraPresent = try {
+            applicationContext.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_CAMERA_ANY)
+        } catch (e: Exception) {
+            false
+        }
 
         //val fcmId = FirebaseInstallations.getInstance().id
         val fcmToken = FirebaseMessaging.getInstance().token

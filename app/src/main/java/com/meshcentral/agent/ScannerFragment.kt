@@ -1,8 +1,10 @@
 package com.meshcentral.agent
 
 import android.app.AlertDialog
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.Gravity
+import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import android.view.LayoutInflater
 import android.view.View
@@ -13,60 +15,125 @@ import androidx.navigation.fragment.findNavController
 import com.budiyev.android.codescanner.CodeScanner
 import com.budiyev.android.codescanner.CodeScannerView
 import com.budiyev.android.codescanner.DecodeCallback
-import com.karumi.dexter.Dexter
-import com.karumi.dexter.PermissionToken
-import com.karumi.dexter.listener.PermissionDeniedResponse
-import com.karumi.dexter.listener.PermissionGrantedResponse
-import com.karumi.dexter.listener.PermissionRequest
-import com.karumi.dexter.listener.single.PermissionListener
-import java.util.jar.Manifest
 
 /**
  * A simple [Fragment] subclass as the second destination in the navigation.
  */
-class ScannerFragment : Fragment(), PermissionListener {
+class ScannerFragment : Fragment() {
     private var lastToast : Toast? = null
-    private lateinit var codeScanner: CodeScanner
+    private var codeScanner: CodeScanner? = null
+    private var scannerView: CodeScannerView? = null
     var alert : AlertDialog? = null
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?,
         savedInstanceState: Bundle?
     ): View? {
-        // Inflate the layout for this fragment
         return inflater.inflate(R.layout.scanner_fragment, container, false)
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        scannerFragment = this;
-        visibleScreen = 2;
+        scannerFragment = this
+        visibleScreen = 2
 
         view.findViewById<Button>(R.id.button_second).setOnClickListener {
             lastToast?.cancel()
             findNavController().navigate(R.id.action_SecondFragment_to_FirstFragment)
         }
 
-        val scannerView = view.findViewById<CodeScannerView>(R.id.scanner_view)
-        val activity = requireActivity()
-        lastToast = Toast.makeText(activity, "", Toast.LENGTH_LONG)
-        codeScanner = CodeScanner(activity, scannerView)
-        codeScanner.decodeCallback = DecodeCallback {
-            activity.runOnUiThread {
-                if (isMshStringValid(it.text)) {
-                    lastToast?.cancel()
-                    confirmServerSetup(it.text)
-                } else {
-                    lastToast?.setGravity(Gravity.CENTER, 0, 300)
-                    lastToast?.setText(getString(R.string.invalid_qrcode))
-                    lastToast?.show()
-                    codeScanner.startPreview()
-                }
+        scannerView = view.findViewById(R.id.scanner_view)
+        lastToast = Toast.makeText(requireActivity(), "", Toast.LENGTH_LONG)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (ContextCompat.checkSelfPermission(requireContext(), android.Manifest.permission.CAMERA)
+                == PackageManager.PERMISSION_GRANTED) {
+            initCodeScanner()
+        } else {
+            requestPermissions(arrayOf(android.Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == CAMERA_PERMISSION_REQUEST) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                initCodeScanner()
+            } else {
+                findNavController().navigate(R.id.action_SecondFragment_to_FirstFragment)
             }
         }
-        scannerView.setOnClickListener {
-            codeScanner.startPreview()
+    }
+
+    // CodeScanner spawns a background thread (CodeScannerSInitializationThread) that can throw
+    // CodeScannerException asynchronously — a normal try-catch on the constructor won't catch it.
+    // We install a temporary uncaught exception handler to intercept that and navigate back
+    // gracefully instead of crashing.
+    private fun initCodeScanner() {
+        if (codeScanner != null) {
+            codeScanner?.startPreview()
+            return
         }
+        val sv = scannerView ?: return
+        val act = activity ?: return
+
+        val prevHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, ex ->
+            Thread.setDefaultUncaughtExceptionHandler(prevHandler)
+            val isCameraError = ex.javaClass.name.contains("CodeScanner", ignoreCase = true) ||
+                ex.message?.contains("camera", ignoreCase = true) == true
+            if (isCameraError) {
+                act.runOnUiThread {
+                    codeScanner = null
+                    cameraPresent = false
+                    try {
+                        findNavController().navigate(R.id.action_SecondFragment_to_FirstFragment)
+                        (act as? MainActivity)?.promptForServerLink()
+                    } catch (_: Exception) {}
+                }
+            } else {
+                try {
+                    val trace = android.util.Log.getStackTraceString(ex)
+                    val prefs = act.getSharedPreferences("meshagent", android.content.Context.MODE_PRIVATE)
+                    prefs.edit().putString("last_crash", "[${thread.name}] $ex\n$trace").apply()
+                } catch (_: Exception) {}
+                prevHandler?.uncaughtException(thread, ex)
+            }
+        }
+
+        try {
+            codeScanner = CodeScanner(act, sv)
+            codeScanner!!.decodeCallback = DecodeCallback {
+                act.runOnUiThread {
+                    if (isMshStringValid(it.text)) {
+                        lastToast?.cancel()
+                        confirmServerSetup(it.text)
+                    } else {
+                        lastToast?.setGravity(Gravity.CENTER, 0, 300)
+                        lastToast?.setText(getString(R.string.invalid_qrcode))
+                        lastToast?.show()
+                        codeScanner?.startPreview()
+                    }
+                }
+            }
+            sv.setOnClickListener { codeScanner?.startPreview() }
+            codeScanner?.startPreview()
+        } catch (e: Exception) {
+            Thread.setDefaultUncaughtExceptionHandler(prevHandler)
+            codeScanner = null
+            cameraPresent = false
+            try {
+                findNavController().navigate(R.id.action_SecondFragment_to_FirstFragment)
+                (act as? MainActivity)?.promptForServerLink()
+            } catch (_: Exception) {}
+        }
+    }
+
+    override fun onPause() {
+        codeScanner?.releaseResources()
+        super.onPause()
     }
 
     override fun onDestroy() {
@@ -76,21 +143,6 @@ class ScannerFragment : Fragment(), PermissionListener {
         }
         lastToast?.cancel()
         super.onDestroy()
-    }
-
-    override fun onResume() {
-        println("onResume")
-        super.onResume()
-        Dexter.withContext(context)
-            .withPermission(android.Manifest.permission.CAMERA)
-            .withListener(this)
-            .check()
-        //codeScanner.startPreview()
-    }
-
-    override fun onPause() {
-        codeScanner.releaseResources()
-        super.onPause()
     }
 
     fun getServerHost(serverLink : String?) : String? {
@@ -114,28 +166,17 @@ class ScannerFragment : Fragment(), PermissionListener {
             findNavController().navigate(R.id.action_SecondFragment_to_FirstFragment)
         }
         builder.setNeutralButton(android.R.string.cancel) { _, _ ->
-            codeScanner.startPreview()
+            codeScanner?.startPreview()
         }
         alert = builder.show()
     }
 
-    override fun onPermissionGranted(p0: PermissionGrantedResponse?) {
-        println("onPermissionGranted")
-        codeScanner.startPreview()
-    }
-
-    override fun onPermissionRationaleShouldBeShown(p0: PermissionRequest?, p1: PermissionToken?) {
-        println("onPermissionRationaleShouldBeShown")
-        p1?.continuePermissionRequest()
-    }
-
-    override fun onPermissionDenied(p0: PermissionDeniedResponse?) {
-        println("onPermissionDenied")
-        findNavController().navigate(R.id.action_SecondFragment_to_FirstFragment)
-    }
-
     fun exit() {
         findNavController().navigate(R.id.action_SecondFragment_to_FirstFragment)
+    }
+
+    companion object {
+        private const val CAMERA_PERMISSION_REQUEST = 200
     }
 
     fun isMshStringValid(x:String):Boolean {

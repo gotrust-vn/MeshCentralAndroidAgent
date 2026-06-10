@@ -370,7 +370,7 @@ class ScreenCaptureService : Service() {
         object : Thread() {
             override fun run() {
                 Looper.prepare()
-                mHandler = Handler()
+                mHandler = Handler(Looper.myLooper()!!)
                 Looper.loop()
             }
         }.start()
@@ -380,10 +380,20 @@ class ScreenCaptureService : Service() {
         if (ScreenCaptureService.Companion.isStartCommand(intent)) {
             // Create notification
             val notification: Pair<Int, Notification> = NotificationUtils.getNotification(this)
-            startForeground(notification.first!!, notification.second)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                startForeground(notification.first!!, notification.second,
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+            } else {
+                startForeground(notification.first!!, notification.second)
+            }
             // Start projection
             val resultCode = intent.getIntExtra(ScreenCaptureService.Companion.RESULT_CODE, Activity.RESULT_CANCELED)
-            val data = intent.getParcelableExtra<Intent>(ScreenCaptureService.Companion.DATA)
+            val data = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                intent.getParcelableExtra(ScreenCaptureService.Companion.DATA, Intent::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra(ScreenCaptureService.Companion.DATA)
+            }
             startProjection(resultCode, data)
         } else if (ScreenCaptureService.Companion.isStopCommand(intent)) {
             stopProjection()

@@ -614,7 +614,7 @@ class MeshTunnel(parent: MeshAgent, url: String, serverData: JSONObject) : WebSo
         if (uri == null) { return r }
         if (dir.startsWith("Sdcard")) {
             val path = dir.replaceFirst("Sdcard", Environment.getExternalStorageDirectory().absolutePath)
-            val listOfFiles = File(path).listFiles()
+            val listOfFiles = File(path).listFiles() ?: emptyArray()
             for (file in listOfFiles) {
                 var f : JSONObject = JSONObject()
                 f.put("n", file.name)

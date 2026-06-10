@@ -1,6 +1,5 @@
 package com.meshcentral.agent
 
-import android.Manifest
 import android.R.attr.*
 import android.app.AlertDialog
 import android.content.ComponentName
@@ -16,17 +15,12 @@ import android.view.ViewGroup
 import android.widget.*
 import androidx.fragment.app.Fragment
 import androidx.navigation.fragment.findNavController
-import com.karumi.dexter.Dexter
-import com.karumi.dexter.MultiplePermissionsReport
-import com.karumi.dexter.PermissionToken
-import com.karumi.dexter.listener.PermissionRequest
-import com.karumi.dexter.listener.multi.MultiplePermissionsListener
 
 
 /**
  * A simple [Fragment] subclass as the default destination in the navigation.
  */
-class MainFragment : Fragment(), MultiplePermissionsListener {
+class MainFragment : Fragment() {
     var alert : AlertDialog? = null
 
     override fun onCreateView(
@@ -45,28 +39,24 @@ class MainFragment : Fragment(), MultiplePermissionsListener {
         refreshInfo()
 
         view.findViewById<Button>(R.id.agentActionButton).setOnClickListener {
-            var serverLink = serverLink;
-            if (serverLink == null) {
-                // Setup the server
-                if (cameraPresent) {
-                    findNavController().navigate(R.id.action_FirstFragment_to_SecondFragment)
+            try {
+                var serverLink = serverLink;
+                if (serverLink == null) {
+                    // Setup the server
+                    if (cameraPresent) {
+                        findNavController().navigate(R.id.action_FirstFragment_to_SecondFragment)
+                    } else {
+                        g_mainActivity!!.promptForServerLink()
+                    }
                 } else {
-                    g_mainActivity!!.promptForServerLink()
+                    if ((activity as MainActivity).isAgentDisconnected() == false) {
+                        (activity as MainActivity).toggleAgentConnection(true)
+                    } else {
+                        (activity as MainActivity).toggleAgentConnection(false)
+                    }
                 }
-            } else {
-                if ((activity as MainActivity).isAgentDisconnected() == false) {
-                    (activity as MainActivity).toggleAgentConnection(true)
-                } else {
-                    // Perform action on the agent
-                    Dexter.withContext(context)
-                        .withPermissions(
-                                //Manifest.permission.CAMERA,
-                                Manifest.permission.READ_EXTERNAL_STORAGE,
-                                Manifest.permission.WRITE_EXTERNAL_STORAGE
-                        )
-                        .withListener(this)
-                        .check()
-                }
+            } catch (e: Exception) {
+                showCrashDialog("agentActionButton", e)
             }
         }
 
@@ -391,16 +381,6 @@ class MainFragment : Fragment(), MultiplePermissionsListener {
         return serverHost
     }
 
-    override fun onPermissionsChecked(report: MultiplePermissionsReport?) {
-        println("onPermissionsChecked")
-        (activity as MainActivity).toggleAgentConnection(false)
-    }
-
-    override fun onPermissionRationaleShouldBeShown(permissions: MutableList<PermissionRequest>?, token: PermissionToken?) {
-        println("onPermissionRationaleShouldBeShown")
-        token?.continuePermissionRequest()
-    }
-
     fun confirmServerSetup(x: String) {
         val builder = AlertDialog.Builder(activity)
         builder.setTitle("MeshCentral Server")
@@ -425,5 +405,24 @@ class MainFragment : Fragment(), MultiplePermissionsListener {
             alert = null
         }
         super.onDestroy()
+    }
+
+    private fun showCrashDialog(location: String, e: Exception) {
+        try {
+            val trace = android.util.Log.getStackTraceString(e)
+            val msg = "[$location] ${e}\n$trace"
+            val tv = android.widget.TextView(requireContext()).apply {
+                text = msg
+                setPadding(32, 32, 32, 32)
+                setTextIsSelectable(true)
+                textSize = 10f
+            }
+            val sv = android.widget.ScrollView(requireContext()).apply { addView(tv) }
+            val dlg = AlertDialog.Builder(requireContext())
+            dlg.setTitle("Error")
+            dlg.setView(sv)
+            dlg.setPositiveButton("OK") { d, _ -> d.dismiss() }
+            dlg.show()
+        } catch (_: Exception) {}
     }
 }
