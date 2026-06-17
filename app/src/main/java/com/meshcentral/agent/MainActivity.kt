@@ -12,6 +12,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.RestrictionsManager
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -108,6 +109,12 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         g_mainActivity = this
+        // On fresh launch (not config change), stop any lingering foreground service so
+        // startProjection() can show the consent dialog for the new connection.
+        if (savedInstanceState == null && g_ScreenCaptureService != null) {
+            startService(ScreenCaptureService.getStopIntent(this))
+            g_ScreenCaptureService = null
+        }
         val sharedPreferences = getSharedPreferences("meshagent", Context.MODE_PRIVATE)
 
         // Global crash handler — saves stack trace and shows it on next launch
@@ -145,7 +152,13 @@ class MainActivity : AppCompatActivity() {
         if (hardCodedServerLink != null) {
             serverLink = hardCodedServerLink
         } else {
-            serverLink = sharedPreferences?.getString("qrmsh", null)
+            val mdmLink = getMdmServerLink()
+            if (mdmLink != null) {
+                serverLink = mdmLink
+                sharedPreferences.edit().putString("qrmsh", mdmLink).apply()
+            } else {
+                serverLink = sharedPreferences?.getString("qrmsh", null)
+            }
         }
 
         super.onCreate(savedInstanceState)
@@ -327,6 +340,30 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        val filter = IntentFilter(Intent.ACTION_APPLICATION_RESTRICTIONS_CHANGED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(mdmConfigReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(mdmConfigReceiver, filter)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Poll MDM config on every resume in case broadcast was missed while in background
+        val mdmLink = getMdmServerLink()
+        if (mdmLink != null && mdmLink != serverLink && hardCodedServerLink == null) {
+            setMeshServerLink(mdmLink)
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        try { unregisterReceiver(mdmConfigReceiver) } catch (_: Exception) {}
+    }
+
     override fun onDestroy() {
         g_mainActivity = null
         if (alert != null) {
@@ -382,9 +419,12 @@ class MainActivity : AppCompatActivity() {
 
     fun setMeshServerLink(x: String?) {
         if ((serverLink == x) || (hardCodedServerLink != null)) return
-        if (meshAgent != null) { // Stop the agent
-            meshAgent?.Stop()
-            meshAgent = null
+        if (meshAgent != null) { meshAgent?.Stop(); meshAgent = null }
+        // Stop old screen capture and immediately clear reference so startProjection() can
+        // fire for the new server without seeing the old service as still running.
+        if (g_ScreenCaptureService != null) {
+            startService(ScreenCaptureService.getStopIntent(this))
+            g_ScreenCaptureService = null
         }
         serverLink = x
         val sharedPreferences = getSharedPreferences("meshagent", Context.MODE_PRIVATE)
@@ -728,8 +768,16 @@ class MainActivity : AppCompatActivity() {
     fun settingsChanged() {
         this.runOnUiThread {
             val pm: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(this)
-            g_autoConnect = pm.getBoolean("pref_autoconnect", false)
-            g_autoConsent = pm.getBoolean("pref_autoconsent", false)
+            // Migrate old installs that had default=false: force both to true once
+            if (!pm.contains("pref_defaults_migrated")) {
+                pm.edit()
+                    .putBoolean("pref_autoconnect", true)
+                    .putBoolean("pref_autoconsent", true)
+                    .putBoolean("pref_defaults_migrated", true)
+                    .apply()
+            }
+            g_autoConnect = pm.getBoolean("pref_autoconnect", true)
+            g_autoConsent = pm.getBoolean("pref_autoconsent", true)
             g_userDisconnect = false
             if (g_autoConnect == false) {
                 if (g_retryTimer != null) {
@@ -756,6 +804,14 @@ class MainActivity : AppCompatActivity() {
                 g_retryTimer = object : CountDownTimer(120000000, 10000) {
                     override fun onTick(millisUntilFinished: Long) {
                         println("onTick!!!")
+                        // Poll MDM for link change every tick (fallback when broadcast is not delivered)
+                        if (hardCodedServerLink == null) {
+                            val mdmLink = getMdmServerLink()
+                            if (mdmLink != null && mdmLink != serverLink) {
+                                setMeshServerLink(mdmLink)
+                                return
+                            }
+                        }
                         if ((meshAgent == null) && (!g_userDisconnect)) {
                             toggleAgentConnection(false)
                         }
@@ -778,6 +834,28 @@ class MainActivity : AppCompatActivity() {
             if (g_retryTimer != null) {
                 g_retryTimer?.cancel()
                 g_retryTimer = null
+            }
+        }
+    }
+
+    private fun getMdmServerLink(): String? {
+        return try {
+            val rm = getSystemService(Context.RESTRICTIONS_SERVICE) as RestrictionsManager
+            val bundle = rm.applicationRestrictions
+            val link = bundle?.getString("link_setup_server")
+            if (!link.isNullOrEmpty()) link else null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private val mdmConfigReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action == Intent.ACTION_APPLICATION_RESTRICTIONS_CHANGED) {
+                val mdmLink = getMdmServerLink()
+                if (mdmLink != null && mdmLink != serverLink && hardCodedServerLink == null) {
+                    setMeshServerLink(mdmLink)
+                }
             }
         }
     }

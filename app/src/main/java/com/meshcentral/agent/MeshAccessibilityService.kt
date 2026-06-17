@@ -548,6 +548,9 @@ class MeshAccessibilityService : AccessibilityService() {
     //   Step 2 – dropdown open → click "Chia sẻ toàn màn hình"
     //   Step 3 – confirm with "Tiếp theo" / "Start now" etc.
     private fun tryAutoAcceptMediaProjection() {
+        // Only auto-click when the app has actually requested a projection — prevents
+        // accidentally clicking "Bắt đầu" buttons in the notification shade or elsewhere.
+        if (!g_pendingProjectionRequest) return
         val roots = getSystemUIRoots()
         if (roots.isEmpty()) return
 

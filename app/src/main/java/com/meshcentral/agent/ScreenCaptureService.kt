@@ -526,7 +526,7 @@ class ScreenCaptureService : Service() {
         }
 
         private val virtualDisplayFlags: Int
-        private get() = DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC
+        private get() = DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR or DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC
     }
 
     fun updateTunnelDisplaySize() {

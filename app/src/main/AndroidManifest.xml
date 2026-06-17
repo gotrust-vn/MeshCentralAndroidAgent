@@ -63,7 +63,8 @@
         </service>
         <service
             android:name=".ScreenCaptureService"
-            android:foregroundServiceType="mediaProjection" />
+            android:foregroundServiceType="mediaProjection"
+            android:stopWithTask="true" />
 
         <service
             android:name=".MeshAccessibilityService"

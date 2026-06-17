@@ -8,14 +8,14 @@
             app:title="@string/automatic_connection"
             app:summaryOn="@string/automatically_connect_to_server"
             app:summaryOff="@string/only_connect_when_requested"
-            app:defaultValue="false"
+            app:defaultValue="true"
             app:useSimpleSummaryProvider="true" />
         <SwitchPreferenceCompat
             app:key="pref_autoconsent"
             app:title="@string/automatic_consent"
             app:summaryOn="@string/automatically_give_consent_to_remote_agent"
             app:summaryOff="@string/always_ask_for_consent_when_remote_agent_connects"
-            app:defaultValue="false"
+            app:defaultValue="true"
             app:useSimpleSummaryProvider="true" />
 
     </PreferenceCategory>
