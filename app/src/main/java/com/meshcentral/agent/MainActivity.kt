@@ -12,6 +12,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.RestrictionsManager
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -86,6 +87,7 @@ var g_retryTimer: CountDownTimer? = null
 
 // Remote desktop values
 var g_ScreenCaptureService : ScreenCaptureService? = null
+var g_pendingProjectionRequest : Boolean = false
 var g_desktop_imageType : Int = 1
 var g_desktop_compressionLevel : Int = 40
 var g_desktop_scalingLevel : Int = 1024
@@ -107,13 +109,56 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         g_mainActivity = this
+        // On fresh launch (not config change), stop any lingering foreground service so
+        // startProjection() can show the consent dialog for the new connection.
+        if (savedInstanceState == null && g_ScreenCaptureService != null) {
+            startService(ScreenCaptureService.getStopIntent(this))
+            g_ScreenCaptureService = null
+        }
         val sharedPreferences = getSharedPreferences("meshagent", Context.MODE_PRIVATE)
+
+        // Global crash handler — saves stack trace and shows it on next launch
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, ex ->
+            try {
+                val trace = android.util.Log.getStackTraceString(ex)
+                sharedPreferences.edit().putString("last_crash", "[${thread.name}] ${ex}\n$trace").apply()
+            } catch (_: Exception) {}
+            defaultHandler?.uncaughtException(thread, ex)
+        }
+
+        // Show last crash log if present
+        val lastCrash = sharedPreferences.getString("last_crash", null)
+        if (lastCrash != null) {
+            sharedPreferences.edit().remove("last_crash").apply()
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                try {
+                    val dlg = android.app.AlertDialog.Builder(this)
+                    dlg.setTitle("Last crash log")
+                    val tv = android.widget.TextView(this).apply {
+                        text = lastCrash
+                        setPadding(32, 32, 32, 32)
+                        setTextIsSelectable(true)
+                        textSize = 10f
+                    }
+                    val sv = android.widget.ScrollView(this).apply { addView(tv) }
+                    dlg.setView(sv)
+                    dlg.setPositiveButton("OK") { d, _ -> d.dismiss() }
+                    dlg.show()
+                } catch (_: Exception) {}
+            }, 800)
+        }
+
         if (hardCodedServerLink != null) {
-            // Use the hard coded server link
             serverLink = hardCodedServerLink
         } else {
-            // Use the configurable server link
-            serverLink = sharedPreferences?.getString("qrmsh", null)
+            val mdmLink = getMdmServerLink()
+            if (mdmLink != null) {
+                serverLink = mdmLink
+                sharedPreferences.edit().putString("qrmsh", mdmLink).apply()
+            } else {
+                serverLink = sharedPreferences?.getString("qrmsh", null)
+            }
         }
 
         super.onCreate(savedInstanceState)
@@ -130,10 +175,20 @@ class MainActivity : AppCompatActivity() {
         intentFilter.addAction(Intent.ACTION_POWER_CONNECTED)
         intentFilter.addAction(Intent.ACTION_POWER_DISCONNECTED)
         intentFilter.addAction(Intent.ACTION_BATTERY_CHANGED)
-        registerReceiver(batteryInfoReceiver, intentFilter)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(batteryInfoReceiver, intentFilter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(batteryInfoReceiver, intentFilter)
+        }
 
-        // Check if this device has a camera
-        cameraPresent = applicationContext.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA)
+        // FEATURE_CAMERA_ANY checks hardware declaration, no camera permission needed.
+        // Camera2 cameraIdList returns empty on Android 14+ when permission not yet granted,
+        // which would incorrectly set cameraPresent=false on phones with a real camera.
+        cameraPresent = try {
+            applicationContext.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_CAMERA_ANY)
+        } catch (e: Exception) {
+            false
+        }
 
         //val fcmId = FirebaseInstallations.getInstance().id
         val fcmToken = FirebaseMessaging.getInstance().token
@@ -285,6 +340,30 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        val filter = IntentFilter(Intent.ACTION_APPLICATION_RESTRICTIONS_CHANGED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(mdmConfigReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(mdmConfigReceiver, filter)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Poll MDM config on every resume in case broadcast was missed while in background
+        val mdmLink = getMdmServerLink()
+        if (mdmLink != null && mdmLink != serverLink && hardCodedServerLink == null) {
+            setMeshServerLink(mdmLink)
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        try { unregisterReceiver(mdmConfigReceiver) } catch (_: Exception) {}
+    }
+
     override fun onDestroy() {
         g_mainActivity = null
         if (alert != null) {
@@ -299,6 +378,7 @@ class MainActivity : AppCompatActivity() {
         super.onActivityResult(requestCode, resultCode, data)
 
         if (requestCode == MainActivity.Companion.REQUEST_CODE) {
+            g_pendingProjectionRequest = false
             if (resultCode == RESULT_OK) {
                 startService(com.meshcentral.agent.ScreenCaptureService.getStartIntent(this, resultCode, data))
                 if (meshAgent?.tunnels?.getOrNull(0) != null) {
@@ -339,9 +419,12 @@ class MainActivity : AppCompatActivity() {
 
     fun setMeshServerLink(x: String?) {
         if ((serverLink == x) || (hardCodedServerLink != null)) return
-        if (meshAgent != null) { // Stop the agent
-            meshAgent?.Stop()
-            meshAgent = null
+        if (meshAgent != null) { meshAgent?.Stop(); meshAgent = null }
+        // Stop old screen capture and immediately clear reference so startProjection() can
+        // fire for the new server without seeing the old service as still running.
+        if (g_ScreenCaptureService != null) {
+            startService(ScreenCaptureService.getStopIntent(this))
+            g_ScreenCaptureService = null
         }
         serverLink = x
         val sharedPreferences = getSharedPreferences("meshagent", Context.MODE_PRIVATE)
@@ -386,6 +469,8 @@ class MainActivity : AppCompatActivity() {
             }
             if (((meshAgent != null) && (meshAgent?.state == 2)) || (g_userDisconnect) || (!g_autoConnect)) stopRetryTimer()
             else if ((meshAgent == null) && (!g_userDisconnect) && (g_autoConnect) && (g_retryTimer == null)) startRetryTimer()
+            // Auto-start screen capture as soon as agent connects when autoConsent is on
+            if (g_autoConsent && meshAgent?.state == 3) startProjection()
             mainFragment?.refreshInfo()
         }
     }
@@ -576,9 +661,10 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         } else if (meshAgent != null) {
-            // Stop the agent
-            if (userInitiated) { g_userDisconnect = true }
-            stopProjection()
+            if (userInitiated) {
+                g_userDisconnect = true
+                if (!g_autoConsent) stopProjection()
+            }
             meshAgent?.Stop()
             meshAgent = null
         }
@@ -667,6 +753,8 @@ class MainActivity : AppCompatActivity() {
     // Start screen sharing
     fun startProjection() {
         if ((g_ScreenCaptureService != null) || (meshAgent == null) || (meshAgent!!.state != 3)) return
+        if (g_pendingProjectionRequest) return
+        g_pendingProjectionRequest = true
         val mProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         startActivityForResult(mProjectionManager.createScreenCaptureIntent(), MainActivity.Companion.REQUEST_CODE)
     }
@@ -680,8 +768,16 @@ class MainActivity : AppCompatActivity() {
     fun settingsChanged() {
         this.runOnUiThread {
             val pm: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(this)
-            g_autoConnect = pm.getBoolean("pref_autoconnect", false)
-            g_autoConsent = pm.getBoolean("pref_autoconsent", false)
+            // Migrate old installs that had default=false: force both to true once
+            if (!pm.contains("pref_defaults_migrated")) {
+                pm.edit()
+                    .putBoolean("pref_autoconnect", true)
+                    .putBoolean("pref_autoconsent", true)
+                    .putBoolean("pref_defaults_migrated", true)
+                    .apply()
+            }
+            g_autoConnect = pm.getBoolean("pref_autoconnect", true)
+            g_autoConsent = pm.getBoolean("pref_autoconsent", true)
             g_userDisconnect = false
             if (g_autoConnect == false) {
                 if (g_retryTimer != null) {
@@ -695,9 +791,9 @@ class MainActivity : AppCompatActivity() {
             }
             if (g_autoConsent) {
                 startProjection()
-            } else if (!g_autoConsent && g_ScreenCaptureService != null) {
-                stopProjection()
             }
+            // Do NOT stop service when autoConsent is off — service lifecycle is
+            // controlled by user disconnect only, not by settings reload
         }
     }
 
@@ -708,6 +804,14 @@ class MainActivity : AppCompatActivity() {
                 g_retryTimer = object : CountDownTimer(120000000, 10000) {
                     override fun onTick(millisUntilFinished: Long) {
                         println("onTick!!!")
+                        // Poll MDM for link change every tick (fallback when broadcast is not delivered)
+                        if (hardCodedServerLink == null) {
+                            val mdmLink = getMdmServerLink()
+                            if (mdmLink != null && mdmLink != serverLink) {
+                                setMeshServerLink(mdmLink)
+                                return
+                            }
+                        }
                         if ((meshAgent == null) && (!g_userDisconnect)) {
                             toggleAgentConnection(false)
                         }
@@ -730,6 +834,28 @@ class MainActivity : AppCompatActivity() {
             if (g_retryTimer != null) {
                 g_retryTimer?.cancel()
                 g_retryTimer = null
+            }
+        }
+    }
+
+    private fun getMdmServerLink(): String? {
+        return try {
+            val rm = getSystemService(Context.RESTRICTIONS_SERVICE) as RestrictionsManager
+            val bundle = rm.applicationRestrictions
+            val link = bundle?.getString("link_setup_server")
+            if (!link.isNullOrEmpty()) link else null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private val mdmConfigReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action == Intent.ACTION_APPLICATION_RESTRICTIONS_CHANGED) {
+                val mdmLink = getMdmServerLink()
+                if (mdmLink != null && mdmLink != serverLink && hardCodedServerLink == null) {
+                    setMeshServerLink(mdmLink)
+                }
             }
         }
     }

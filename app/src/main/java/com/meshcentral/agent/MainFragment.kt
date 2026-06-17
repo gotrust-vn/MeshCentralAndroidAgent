@@ -1,28 +1,26 @@
 package com.meshcentral.agent
 
-import android.Manifest
 import android.R.attr.*
 import android.app.AlertDialog
+import android.content.ComponentName
+import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.*
 import androidx.fragment.app.Fragment
 import androidx.navigation.fragment.findNavController
-import com.karumi.dexter.Dexter
-import com.karumi.dexter.MultiplePermissionsReport
-import com.karumi.dexter.PermissionToken
-import com.karumi.dexter.listener.PermissionRequest
-import com.karumi.dexter.listener.multi.MultiplePermissionsListener
 
 
 /**
  * A simple [Fragment] subclass as the default destination in the navigation.
  */
-class MainFragment : Fragment(), MultiplePermissionsListener {
+class MainFragment : Fragment() {
     var alert : AlertDialog? = null
 
     override fun onCreateView(
@@ -41,29 +39,37 @@ class MainFragment : Fragment(), MultiplePermissionsListener {
         refreshInfo()
 
         view.findViewById<Button>(R.id.agentActionButton).setOnClickListener {
-            var serverLink = serverLink;
-            if (serverLink == null) {
-                // Setup the server
-                if (cameraPresent) {
-                    findNavController().navigate(R.id.action_FirstFragment_to_SecondFragment)
+            try {
+                var serverLink = serverLink;
+                if (serverLink == null) {
+                    // Setup the server
+                    if (cameraPresent) {
+                        findNavController().navigate(R.id.action_FirstFragment_to_SecondFragment)
+                    } else {
+                        g_mainActivity!!.promptForServerLink()
+                    }
                 } else {
-                    g_mainActivity!!.promptForServerLink()
+                    if ((activity as MainActivity).isAgentDisconnected() == false) {
+                        (activity as MainActivity).toggleAgentConnection(true)
+                    } else {
+                        (activity as MainActivity).toggleAgentConnection(false)
+                    }
                 }
-            } else {
-                if ((activity as MainActivity).isAgentDisconnected() == false) {
-                    (activity as MainActivity).toggleAgentConnection(true)
-                } else {
-                    // Perform action on the agent
-                    Dexter.withContext(context)
-                        .withPermissions(
-                                //Manifest.permission.CAMERA,
-                                Manifest.permission.READ_EXTERNAL_STORAGE,
-                                Manifest.permission.WRITE_EXTERNAL_STORAGE
-                        )
-                        .withListener(this)
-                        .check()
-                }
+            } catch (e: Exception) {
+                showCrashDialog("agentActionButton", e)
             }
+        }
+
+        view.findViewById<Button>(R.id.screenShareButton).setOnClickListener {
+            if (g_ScreenCaptureService != null) {
+                (activity as MainActivity).stopProjection()
+            } else {
+                (activity as MainActivity).startProjection()
+            }
+        }
+
+        view.findViewById<Button>(R.id.accessibilityButton).setOnClickListener {
+            openAccessibilityServiceSettings()
         }
 
         // Check if the app was called using a URL link
@@ -270,6 +276,30 @@ class MainFragment : Fragment(), MultiplePermissionsListener {
             getActivity()?.setTitle(R.string.app_name);
         }
 
+        // Screen share button — visible only when agent is connected
+        val shareBtn = view?.findViewById<Button>(R.id.screenShareButton)
+        if (shareBtn != null) {
+            val agentConnected = meshAgent != null && meshAgent!!.state == 3
+            val sharing = g_ScreenCaptureService != null
+            shareBtn.visibility = if (agentConnected) View.VISIBLE else View.GONE
+            if (sharing) {
+                shareBtn.text = getStringEx(R.string.screen_sharing_active)
+                shareBtn.alpha = 0.7f
+            } else {
+                shareBtn.text = getStringEx(R.string.sharescreen)
+                shareBtn.alpha = 1.0f
+            }
+        }
+
+        // Accessibility / remote-control button
+        val accBtn = view?.findViewById<Button>(R.id.accessibilityButton)
+        if (accBtn != null) {
+            val enabled = isAccessibilityServiceEnabled()
+            accBtn.text = if (enabled) getStringEx(R.string.remote_control_active) else getStringEx(R.string.enable_remote_control)
+            accBtn.alpha = if (enabled) 0.5f else 1.0f
+            accBtn.isEnabled = !enabled
+        }
+
         if (showServerLogo == 0) {
             // Display default MeshCentral image
             var imageView : ImageView? = null
@@ -310,6 +340,37 @@ class MainFragment : Fragment(), MultiplePermissionsListener {
         */
     }
 
+    private fun openAccessibilityServiceSettings() {
+        val serviceId = ComponentName(requireContext(), MeshAccessibilityService::class.java).flattenToString()
+        if (Build.VERSION.SDK_INT >= 34) {
+            try {
+                startActivity(Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS").apply {
+                    putExtra("accessibility_service", serviceId)
+                })
+                return
+            } catch (_: Exception) {}
+        }
+        try {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                putExtra(":settings:show_fragment_args", Bundle().apply {
+                    putString(":settings:fragment_args_key", serviceId)
+                })
+                putExtra(":settings:fragment_args_key", serviceId)
+            })
+        } catch (_: Exception) {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
+    }
+
+    private fun isAccessibilityServiceEnabled(): Boolean {
+        val cm = ComponentName(requireContext(), MeshAccessibilityService::class.java)
+        val enabled = Settings.Secure.getString(
+            requireContext().contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+        return enabled.split(':').any { ComponentName.unflattenFromString(it) == cm }
+    }
+
     fun getServerHost(serverLink: String?) : String? {
         if (serverLink == null) return null
         var x : List<String> = serverLink.split(',')
@@ -318,16 +379,6 @@ class MainFragment : Fragment(), MultiplePermissionsListener {
         var i = serverHost.indexOf(':')
         if (i > 0) { serverHost = serverHost.substring(0, i) } // Remove the port number if present
         return serverHost
-    }
-
-    override fun onPermissionsChecked(report: MultiplePermissionsReport?) {
-        println("onPermissionsChecked")
-        (activity as MainActivity).toggleAgentConnection(false)
-    }
-
-    override fun onPermissionRationaleShouldBeShown(permissions: MutableList<PermissionRequest>?, token: PermissionToken?) {
-        println("onPermissionRationaleShouldBeShown")
-        token?.continuePermissionRequest()
     }
 
     fun confirmServerSetup(x: String) {
@@ -354,5 +405,24 @@ class MainFragment : Fragment(), MultiplePermissionsListener {
             alert = null
         }
         super.onDestroy()
+    }
+
+    private fun showCrashDialog(location: String, e: Exception) {
+        try {
+            val trace = android.util.Log.getStackTraceString(e)
+            val msg = "[$location] ${e}\n$trace"
+            val tv = android.widget.TextView(requireContext()).apply {
+                text = msg
+                setPadding(32, 32, 32, 32)
+                setTextIsSelectable(true)
+                textSize = 10f
+            }
+            val sv = android.widget.ScrollView(requireContext()).apply { addView(tv) }
+            val dlg = AlertDialog.Builder(requireContext())
+            dlg.setTitle("Error")
+            dlg.setView(sv)
+            dlg.setPositiveButton("OK") { d, _ -> d.dismiss() }
+            dlg.show()
+        } catch (_: Exception) {}
     }
 }

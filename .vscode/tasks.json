@@ -1,0 +1,68 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build Debug APK",
+            "type": "shell",
+            "command": ".\\gradlew.bat assembleDebug",
+            "options": {
+                "env": {
+                    "JAVA_HOME": "C:\\Program Files\\Eclipse Adoptium\\jdk-17.0.17.10-hotspot"
+                }
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Build Release APK",
+            "type": "shell",
+            "command": ".\\gradlew.bat assembleRelease",
+            "options": {
+                "env": {
+                    "JAVA_HOME": "C:\\Program Files\\Eclipse Adoptium\\jdk-17.0.17.10-hotspot"
+                }
+            },
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Clean Build",
+            "type": "shell",
+            "command": ".\\gradlew.bat clean",
+            "options": {
+                "env": {
+                    "JAVA_HOME": "C:\\Program Files\\Eclipse Adoptium\\jdk-17.0.17.10-hotspot"
+                }
+            },
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Install Debug APK (ADB)",
+            "type": "shell",
+            "command": "adb install -r app\\build\\outputs\\apk\\debug\\app-debug.apk",
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": [],
+            "dependsOn": "Build Debug APK"
+        }
+    ]
+}

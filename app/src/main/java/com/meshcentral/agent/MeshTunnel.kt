@@ -222,9 +222,11 @@ class MeshTunnel(parent: MeshAgent, url: String, serverData: JSONObject) : WebSo
                             }
                         }
                         if (g_ScreenCaptureService == null) {
-                            // Request media projection
+                            // No active session — request new MediaProjection (shows permission dialog)
                             parent.parent.startProjection()
                         } else {
+                            // Session exists — resume capture without permission dialog
+                            g_ScreenCaptureService!!.resumeCapture()
                             if (meshAgent?.tunnels?.getOrNull(0) != null) {
                                 val json = JSONObject()
                                 json.put("type", "console")
@@ -309,17 +311,45 @@ class MeshTunnel(parent: MeshAgent, url: String, serverData: JSONObject) : WebSo
 
     private fun processBinaryDesktopCmd(cmd : Int, cmdsize: Int, msg: ByteString) {
         when (cmd) {
-            1 -> { // Legacy key input
-                // Nop
+            1 -> { // Key input — two formats:
+                //   size=6: [isDown(1)][keyCode(1)]   ← MeshCentral web client
+                //   size=7: [keyCode(2)][isDown(1)]   ← legacy/X11 keysym
+                if (cmdsize < 6) return
+                val isDown: Boolean
+                val keyCode: Int
+                if (cmdsize >= 7) {
+                    keyCode = ((msg[4].toInt() and 0xFF) shl 8) or (msg[5].toInt() and 0xFF)
+                    isDown = (msg[6].toInt() and 0xFF) != 0
+                } else {
+                    isDown = (msg[4].toInt() and 0xFF) != 0
+                    keyCode = msg[5].toInt() and 0xFF
+                }
+                println("Key1: code=0x${keyCode.toString(16)} down=$isDown hex=${msg.toByteArray().toHex()} svc=${g_AccessibilityService != null}")
+                g_AccessibilityService?.injectKeyEvent(keyCode, isDown)
             }
             2 -> { // Mouse input
-                // Nop
+                // Layout: [4]=unused [5]=flags [6..7]=X [8..9]=Y
+                // flags: 0x00=move 0x02=left-dn 0x04=left-up 0x08=right-dn 0x10=right-up 0x88=dbl-click
+                // If size=12: scroll event with delta at [10..11]
+                if (cmdsize < 10) return
+                val flags = msg[5].toInt() and 0xFF
+                val x = ((msg[6].toInt() and 0xFF) shl 8) or (msg[7].toInt() and 0xFF)
+                val y = ((msg[8].toInt() and 0xFF) shl 8) or (msg[9].toInt() and 0xFF)
+                println("Mouse2: flags=0x${flags.toString(16)} x=$x y=$y accessibility=${g_AccessibilityService != null}")
+                if (cmdsize >= 12) {
+                    // Scroll wheel event: signed delta at [10..11]
+                    val raw = ((msg[10].toInt() and 0xFF) shl 8) or (msg[11].toInt() and 0xFF)
+                    val delta = if (raw > 32767) raw - 65536 else raw
+                    g_AccessibilityService?.injectScrollEvent(x.toFloat(), y.toFloat(), delta)
+                } else {
+                    g_AccessibilityService?.injectMouseEvent(x.toFloat(), y.toFloat(), flags)
+                }
             }
             5 -> { // Remote Desktop Settings
                 if (cmdsize < 6) return
                 g_desktop_imageType = msg[4].toInt() // 1 = JPEG, 2 = PNG, 3 = TIFF, 4 = WebP. TIFF is not support on Android.
                 g_desktop_compressionLevel = msg[5].toInt() // Value from 1 to 100
-                if (cmdsize >= 8) { g_desktop_scalingLevel = (msg[6].toInt() shl 8).absoluteValue + msg[7].toInt().absoluteValue } // 1024 = 100%
+                if (cmdsize >= 8) { g_desktop_scalingLevel = ((msg[6].toInt() and 0xFF) shl 8) or (msg[7].toInt() and 0xFF) } // 1024 = 100%
                 if (cmdsize >= 10) { g_desktop_frameRateLimiter = (msg[8].toInt() shl 8).absoluteValue + msg[9].toInt().absoluteValue }
                 println("Desktop Settings, type=$g_desktop_imageType, comp=$g_desktop_compressionLevel, scale=$g_desktop_scalingLevel, rate=$g_desktop_frameRateLimiter")
                 updateDesktopDisplaySize()
@@ -331,11 +361,46 @@ class MeshTunnel(parent: MeshAgent, url: String, serverData: JSONObject) : WebSo
             8 -> { // Pause
                 // Nop
             }
-            85 -> { // Unicode key input
-                // Nop
+            85 -> { // Unicode key input: [down(1), charHi(1), charLo(1)]
+                if (cmdsize < 7) return
+                val isDown = (msg[4].toInt() and 0xFF) != 0
+                val keyChar = ((msg[5].toInt() and 0xFF) shl 8) or (msg[6].toInt() and 0xFF)
+                println("Key85: char=0x${keyChar.toString(16)} down=$isDown hex=${msg.toByteArray().toHex()} svc=${g_AccessibilityService != null}")
+                g_AccessibilityService?.injectUnicodeChar(keyChar, isDown)
             }
-            87 -> { // Input Lock
-                // Nop
+            14 -> { // MNG_KVM_INIT_TOUCH — server asking if we support touch input
+                println("INIT_TOUCH: responding with touch support enabled")
+                val resp = java.io.ByteArrayOutputStream()
+                java.io.DataOutputStream(resp).use { dos ->
+                    dos.writeShort(14) // cmd = MNG_KVM_INIT_TOUCH
+                    dos.writeShort(6)  // size = 6
+                    dos.writeShort(0)  // return code 0 = touch supported
+                }
+                _webSocket?.send(resp.toByteArray().toByteString())
+            }
+            15 -> { // MNG_KVM_TOUCH — actual touch event from web interface
+                // Format (version 2): [cmd(2)][size(2)][ver=0x02(1)][touchId(2)][flags(4)][X(2)][Y(2)]
+                if (cmdsize < 15) {
+                    println("TOUCH: too short cmdsize=$cmdsize hex=${msg.toByteArray().toHex()}")
+                    return
+                }
+                // flags: bit 16 = DOWN (0x00010000), bit 17 = MOVE (0x00020000), bit 18 = UP (0x00040000)
+                val flags32 = ((msg[7].toInt() and 0xFF) shl 24) or
+                              ((msg[8].toInt() and 0xFF) shl 16) or
+                              ((msg[9].toInt() and 0xFF) shl 8) or
+                               (msg[10].toInt() and 0xFF)
+                val tx = ((msg[11].toInt() and 0xFF) shl 8) or (msg[12].toInt() and 0xFF)
+                val ty = ((msg[13].toInt() and 0xFF) shl 8) or (msg[14].toInt() and 0xFF)
+                println("TOUCH: flags=0x${flags32.toString(16)} x=$tx y=$ty hex=${msg.toByteArray().toHex()}")
+                val mouseFlags = when {
+                    (flags32 and 0x00010000) != 0 -> 0x02 // finger down → left mouse down
+                    (flags32 and 0x00020000) != 0 -> 0x00 // finger move → mouse move
+                    (flags32 and 0x00040000) != 0 -> 0x04 // finger up   → left mouse up
+                    else -> { println("TOUCH: unknown flags=0x${flags32.toString(16)}"); return }
+                }
+                g_AccessibilityService?.injectMouseEvent(tx.toFloat(), ty.toFloat(), mouseFlags)
+            }
+            87 -> { // Input Lock — Nop
             }
             else -> {
                 println("Unknown desktop binary command: $cmd, Size: ${msg.size}, Hex: ${msg.toByteArray().toHex()}")
@@ -549,7 +614,7 @@ class MeshTunnel(parent: MeshAgent, url: String, serverData: JSONObject) : WebSo
         if (uri == null) { return r }
         if (dir.startsWith("Sdcard")) {
             val path = dir.replaceFirst("Sdcard", Environment.getExternalStorageDirectory().absolutePath)
-            val listOfFiles = File(path).listFiles()
+            val listOfFiles = File(path).listFiles() ?: emptyArray()
             for (file in listOfFiles) {
                 var f : JSONObject = JSONObject()
                 f.put("n", file.name)

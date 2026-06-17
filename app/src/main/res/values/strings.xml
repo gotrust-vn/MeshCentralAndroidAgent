@@ -63,4 +63,9 @@
     <string name="clear_server_setup">Clear server setup?</string>
     <string name="server_pairing_link">Server Pairing Link</string>
     <string name="invalid_server_pairing_link">Invalid Server Pairing Linbk</string>
+    <string name="accessibility_service_label">MeshCentral Remote Control</string>
+    <string name="accessibility_service_description">Allows MeshCentral server to remotely control this device (touch and keyboard input)</string>
+    <string name="enable_remote_control">Enable Remote Control</string>
+    <string name="remote_control_active">Remote Control Active ✓</string>
+    <string name="screen_sharing_active">Screen Sharing Active ✓</string>
 </resources>
