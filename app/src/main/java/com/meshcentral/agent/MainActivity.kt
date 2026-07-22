@@ -18,9 +18,11 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.CountDownTimer
+import android.os.PowerManager
 import android.provider.Settings
 import android.text.InputType
 import android.util.Base64
@@ -101,6 +103,8 @@ class MainActivity : AppCompatActivity() {
     lateinit var notificationChannel: NotificationChannel
     lateinit var notificationManager: NotificationManager
     lateinit var builder: Notification.Builder
+    private var agentWakeLock: PowerManager.WakeLock? = null
+    private var agentWifiLock: WifiManager.WifiLock? = null
 
     init {
         Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME)
@@ -370,7 +374,34 @@ class MainActivity : AppCompatActivity() {
             alert?.dismiss()
             alert = null
         }
+        releaseAgentLocks()
         super.onDestroy()
+    }
+
+    private fun acquireAgentLocks() {
+        try {
+            if (agentWakeLock == null) {
+                val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+                agentWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MeshAgent:WakeLock")
+                agentWakeLock?.setReferenceCounted(false)
+            }
+            if (agentWakeLock?.isHeld == false) agentWakeLock?.acquire()
+        } catch (_: Exception) {}
+
+        try {
+            if (agentWifiLock == null) {
+                val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: return
+                @Suppress("DEPRECATION")
+                agentWifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL, "MeshAgent:WifiLock")
+                agentWifiLock?.setReferenceCounted(false)
+            }
+            if (agentWifiLock?.isHeld == false) agentWifiLock?.acquire()
+        } catch (_: Exception) {}
+    }
+
+    private fun releaseAgentLocks() {
+        try { if (agentWakeLock?.isHeld == true) agentWakeLock?.release() } catch (_: Exception) {}
+        try { if (agentWifiLock?.isHeld == true) agentWifiLock?.release() } catch (_: Exception) {}
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -466,11 +497,13 @@ class MainActivity : AppCompatActivity() {
         this.runOnUiThread {
             if ((meshAgent != null) && (meshAgent?.state == 0)) {
                 meshAgent = null
+                releaseAgentLocks()
             }
             if (((meshAgent != null) && (meshAgent?.state == 2)) || (g_userDisconnect) || (!g_autoConnect)) stopRetryTimer()
             else if ((meshAgent == null) && (!g_userDisconnect) && (g_autoConnect) && (g_retryTimer == null)) startRetryTimer()
             // Auto-start screen capture as soon as agent connects when autoConsent is on
             if (g_autoConsent && meshAgent?.state == 3) startProjection()
+            if (meshAgent?.state == 3) acquireAgentLocks()
             mainFragment?.refreshInfo()
         }
     }
@@ -667,6 +700,7 @@ class MainActivity : AppCompatActivity() {
             }
             meshAgent?.Stop()
             meshAgent = null
+            releaseAgentLocks()
         }
         mainFragment?.refreshInfo()
     }
