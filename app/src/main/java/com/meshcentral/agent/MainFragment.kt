@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.text.InputType
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -50,7 +51,7 @@ class MainFragment : Fragment() {
                     }
                 } else {
                     if ((activity as MainActivity).isAgentDisconnected() == false) {
-                        (activity as MainActivity).toggleAgentConnection(true)
+                        promptDisconnectPassword()
                     } else {
                         (activity as MainActivity).toggleAgentConnection(false)
                     }
@@ -397,6 +398,26 @@ class MainFragment : Fragment() {
             (activity as MainActivity).intent.data = null;
         }
         alert = builder.show()
+    }
+
+    private fun promptDisconnectPassword() {
+        val input = EditText(requireContext()).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            hint = "Mật khẩu"
+        }
+        AlertDialog.Builder(requireContext())
+            .setTitle("Xác nhận ngắt kết nối")
+            .setMessage("Nhập mật khẩu để ngắt kết nối")
+            .setView(input)
+            .setPositiveButton("Xác nhận") { _, _ ->
+                if (input.text.toString() == "19003426") {
+                    (activity as MainActivity).toggleAgentConnection(true)
+                } else {
+                    Toast.makeText(requireContext(), "Mật khẩu không đúng", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Huỷ", null)
+            .show()
     }
 
     override fun onDestroy() {
