@@ -56,6 +56,14 @@
             </intent-filter>
         </activity>
 
+        <receiver
+            android:name=".PackageReplacedReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name=".MeshFirebaseMessagingService"
             android:exported="false">
