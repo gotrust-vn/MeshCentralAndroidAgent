@@ -50,9 +50,11 @@ gradlew.bat assembleDebug
 ```
 
 > **Lưu ý:** Nếu máy có JAVA_HOME trỏ sai JDK, hãy dùng:
+>
 > ```bash
 > JAVA_HOME="" ./gradlew assembleDebug
 > ```
+>
 > Gradle sẽ tự dùng đường dẫn trong `gradle.properties` (`org.gradle.java.home`).
 
 APK output: `app/build/outputs/apk/debug/app-debug.apk`
@@ -60,7 +62,7 @@ APK output: `app/build/outputs/apk/debug/app-debug.apk`
 ### 4. Build APK release
 
 ```bash
-gradlew.bat assembleRelease   # Windows
+gradlew assembleRelease "-PversionName=1.0.29" "-PversionCode=36"  # Windows
 ./gradlew assembleRelease      # Linux / macOS
 ```
 
@@ -97,8 +99,8 @@ startActivity(Intent(Intent.ACTION_VIEW, uri))
 
 Trong Headwind MDM admin, vào **Applications → App Settings**, thêm attribute:
 
-| Key | Type | Value |
-|-----|------|-------|
+| Key                 | Type   | Value                                  |
+| ------------------- | ------ | -------------------------------------- |
 | `link_setup_server` | String | `mc://your-server.com,<hash>,<meshid>` |
 
 App sẽ tự đọc link này khi khởi động và kiểm tra mỗi ~10 giây trong lúc chạy.
@@ -145,13 +147,13 @@ app/src/main/java/com/meshcentral/agent/
 
 ## Các biến toàn cục quan trọng
 
-| Biến | Ý nghĩa |
-|------|---------|
-| `g_autoConnect` | Tự động kết nối server khi khởi động |
-| `g_autoConsent` | Tự động chấp nhận dialog chia sẻ màn hình |
-| `g_ScreenCaptureService` | Reference đến ScreenCaptureService đang chạy |
-| `g_mainActivity` | Reference đến MainActivity hiện tại |
-| `g_pendingProjectionRequest` | Đang chờ user xác nhận quyền ghi màn hình |
+| Biến                         | Ý nghĩa                                      |
+| ---------------------------- | -------------------------------------------- |
+| `g_autoConnect`              | Tự động kết nối server khi khởi động         |
+| `g_autoConsent`              | Tự động chấp nhận dialog chia sẻ màn hình    |
+| `g_ScreenCaptureService`     | Reference đến ScreenCaptureService đang chạy |
+| `g_mainActivity`             | Reference đến MainActivity hiện tại          |
+| `g_pendingProjectionRequest` | Đang chờ user xác nhận quyền ghi màn hình    |
 
 ---
 

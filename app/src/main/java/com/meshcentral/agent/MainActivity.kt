@@ -361,6 +361,12 @@ class MainActivity : AppCompatActivity() {
         if (mdmLink != null && mdmLink != serverLink && hardCodedServerLink == null) {
             setMeshServerLink(mdmLink)
         }
+        // If autoConsent is on, agent is connected, but screen capture never started and
+        // no dialog is currently pending — retry startProjection() now that we are in the
+        // foreground and the accessibility service should be ready to auto-click.
+        if (g_autoConsent && meshAgent?.state == 3 && g_ScreenCaptureService == null && !g_pendingProjectionRequest) {
+            startProjection()
+        }
     }
 
     override fun onStop() {
@@ -421,7 +427,10 @@ class MainActivity : AppCompatActivity() {
                 }
                 return
             } else {
-                if (meshAgent?.tunnels?.getOrNull(0) != null) {
+                // With autoConsent, a CANCELED result means the dialog was dismissed
+                // automatically (e.g. replaced by a retry dialog) — don't stop the tunnel.
+                // Only stop the tunnel when the user explicitly denies without autoConsent.
+                if (!g_autoConsent && meshAgent?.tunnels?.getOrNull(0) != null) {
                     val json = JSONObject()
                     json.put("type", "console")
                     json.put("msg", "denied")

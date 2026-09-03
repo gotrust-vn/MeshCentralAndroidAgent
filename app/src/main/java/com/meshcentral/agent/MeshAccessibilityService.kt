@@ -50,6 +50,12 @@ class MeshAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         g_AccessibilityService = this
         println("MeshAccessibilityService: connected")
+        // If startProjection() fired before this service was ready, the dialog may have been
+        // missed and g_pendingProjectionRequest got stuck true. Reset and retry now.
+        if (g_autoConsent && g_pendingProjectionRequest && g_ScreenCaptureService == null) {
+            g_pendingProjectionRequest = false
+            g_mainActivity?.runOnUiThread { g_mainActivity?.startProjection() }
+        }
     }
 
     override fun onUnbind(intent: android.content.Intent?): Boolean {

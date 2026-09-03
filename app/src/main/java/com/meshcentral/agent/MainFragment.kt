@@ -39,6 +39,14 @@ class MainFragment : Fragment() {
 
         refreshInfo()
 
+        try {
+            val pi = requireContext().packageManager.getPackageInfo(requireContext().packageName, 0)
+            val code = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P)
+                pi.longVersionCode else pi.versionCode.toLong()
+            view.findViewById<android.widget.TextView>(R.id.versionTextView)?.text =
+                "v${pi.versionName} (${code})"
+        } catch (_: Exception) {}
+
         view.findViewById<Button>(R.id.agentActionButton).setOnClickListener {
             try {
                 var serverLink = serverLink;
@@ -71,6 +79,10 @@ class MainFragment : Fragment() {
 
         view.findViewById<Button>(R.id.accessibilityButton).setOnClickListener {
             openAccessibilityServiceSettings()
+        }
+
+        view.findViewById<Button>(R.id.killAppButton).setOnClickListener {
+            activity?.moveTaskToBack(true)
         }
 
         // Check if the app was called using a URL link
