@@ -236,6 +236,8 @@ class MeshTunnel(parent: MeshAgent, url: String, serverData: JSONObject) : WebSo
                             }
                             // Send the display size
                             updateDesktopDisplaySize()
+                            // Screen may be static (no new frames) — push the last frame to the new viewer
+                            g_ScreenCaptureService?.sendFullFrame()
                         }
                     }
                 } else {
@@ -353,10 +355,11 @@ class MeshTunnel(parent: MeshAgent, url: String, serverData: JSONObject) : WebSo
                 if (cmdsize >= 10) { g_desktop_frameRateLimiter = (msg[8].toInt() shl 8).absoluteValue + msg[9].toInt().absoluteValue }
                 println("Desktop Settings, type=$g_desktop_imageType, comp=$g_desktop_compressionLevel, scale=$g_desktop_scalingLevel, rate=$g_desktop_frameRateLimiter")
                 updateDesktopDisplaySize()
+                g_ScreenCaptureService?.sendFullFrame()
             }
             6 -> { // Refresh
-                // Nop
                 println("Desktop Refresh")
+                g_ScreenCaptureService?.sendFullFrame()
             }
             8 -> { // Pause
                 // Nop

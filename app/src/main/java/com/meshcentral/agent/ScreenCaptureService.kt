@@ -148,8 +148,27 @@ class ScreenCaptureService : Service() {
             } catch (e: Exception) {
                 e.printStackTrace()
             }
-            if (bitmap != null) { bitmap.recycle() }
+            // Keep the last processed frame so it can be re-sent on refresh / new viewer
+            // (a static screen produces no new frames from the VirtualDisplay).
+            if (bitmap != null) {
+                val old = lastFrame
+                lastFrame = bitmap
+                if (old != null && old !== bitmap) old.recycle()
+            }
             if (image != null) { image.close() }
+        }
+    }
+
+    // Last frame sent to the viewers, only touched on mHandler thread
+    private var lastFrame: Bitmap? = null
+
+    // Re-send the whole last frame to all desktop tunnels (used when a viewer connects or asks for refresh)
+    fun sendFullFrame() {
+        mHandler?.post {
+            val f = lastFrame
+            if (f != null && !f.isRecycled) {
+                try { sendEntireImage(f) } catch (e: Exception) { e.printStackTrace() }
+            }
         }
     }
 
@@ -329,6 +348,7 @@ class ScreenCaptureService : Service() {
             mHandler?.post {
                 if (mVirtualDisplay != null) { mVirtualDisplay!!.release(); mVirtualDisplay = null }
                 if (mImageReader != null) { mImageReader!!.setOnImageAvailableListener(null, null); mImageReader = null }
+                lastFrame?.recycle(); lastFrame = null
                 mOrientationChangeCallback?.disable()
                 if (mProjectionCallback != null) { mMediaProjection?.unregisterCallback(mProjectionCallback!!); mProjectionCallback = null }
                 mMediaProjection = null
